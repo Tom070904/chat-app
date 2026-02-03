@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Chat App</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <audio id="message-sound" src="https://assets.mixkit.co/active_storage/sfx/2354/2354-preview.mp3" preload="auto"></audio>
+
+    <div id="auth-container">
+        <div id="login-screen">
+            <h2 id="auth-title">Welcome</h2>
+            <input id="username-input" placeholder="Username" />
+            <input id="password-input" type="password" placeholder="Password" />
+            <div style="display:flex; gap:10px;">
+                <button class="btn-join" onclick="handleAuth('login')">Login</button>
+                <button class="btn-download" onclick="handleAuth('register')">Register</button>
+            </div>
+        </div>
+
+        <div id="room-screen" style="display: none;">
+            <h2>Select a Room</h2>
+            <input id="room-input" placeholder="Room Name" />
+            <input id="limit-input" type="number" value="10" placeholder="Limit (if creating)" />
+            <div style="display:flex; gap:10px; margin-bottom: 20px;">
+                <button class="btn-join" onclick="handleRoom('join')">Join Room</button>
+                <button class="btn-download" onclick="handleRoom('create')">Create Room</button>
+            </div>
+            <button class="btn-leave" style="width:100%; background:#f38ba8; color:white;" onclick="deleteAccount()">Delete My Account</button>
+        </div>
+    </div>
+
+    <div id="chat-ui" style="display: none;">
+        <div id="status-bar">
+            <b id="display-name"></b>
+            <div class="button-group">
+                <button class="btn-leave" style="background:#eba0ac" onclick="deleteRoom()">🗑️ Delete Room</button>
+                <button class="btn-download" onclick="downloadChat()">💾 Save Chat</button>
+                <button class="btn-leave" onclick="leaveChat()">Leave Room</button>
+            </div>
+        </div>
+        <ul id="messages"></ul>
+        <div id="typing-indicator" style="padding: 0 20px; font-size: 12px; color: #a6adc8; height: 20px;"></div>
+        <form id="chat-form">
+            <input id="user-input" autocomplete="off" placeholder="Type a message..." />
+            <button class="btn-send">Send</button>
+        </form>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        var socket = io();
+        var username = "";
+        var currentRoom = "";
+        var typingTimer;
+
+                // --- 1. Request Permission on Load ---
+        if (Notification.permission !== "granted") {
+            Notification.requestPermission();
+        }
+
+        // --- 2. Notification Helper Function ---
+        function notifyUser(data) {
+            // Only notify if it's not from us
+            if (data.user === username || data.user === 'System') return;
+
+            // Play the audio sound
+            const msgSound = document.getElementById('message-sound');
+            if (msgSound) msgSound.play().catch(e => console.log("Audio play blocked until user interacts."));
+
+            // Show Browser Notification if tab is hidden
+            if (document.hidden && Notification.permission === "granted") {
+                new Notification(`New message from ${data.user}`, {
+                    body: data.text,
+                    icon: "https://cdn-icons-png.flaticon.com/512/733/733585.png" // Optional icon
+                });
+            }
+        }
+
+     
+        function handleAuth(type) {
+            const user = document.getElementById('username-input').value;
+            const pass = document.getElementById('password-input').value;
+            if (user && pass) { socket.emit(type, { user, pass }); } 
+            else { alert("Fill all fields!"); }
+        }
+
+        socket.on('auth-success', (user) => {
+            username = user;
+            document.getElementById('login-screen').style.display = 'none';
+            document.getElementById('room-screen').style.display = 'block';
+        });
+
+        function handleRoom(type) {
+            const room = document.getElementById('room-input').value;
+            const limit = document.getElementById('limit-input').value;
+            if (!room) return alert("Enter room name!");
+            if (type === 'create') socket.emit('create room', { roomName: room, limit: limit });
+            else socket.emit('join room', { username: username, room: room });
+        }
+
+        socket.on('room-created', (data) => { 
+            alert(`Room Created at ${data.time}`);
+            socket.emit('join room', { username: username, room: data.roomName }); 
+        });
+
+        socket.on('room joined', (roomName) => {
+            currentRoom = roomName;
+            document.getElementById('auth-container').style.display = 'none';
+            document.getElementById('chat-ui').style.display = 'flex';
+            document.getElementById('display-name').innerText = roomName + " | " + username;
+        });
+
+        function addMessageToUI(data) {
+            var item = document.createElement('li');
+            var msgList = document.getElementById('messages');
+            const displayTime = data.time || "";
+
+            if (data.user === 'System') {
+                item.style.alignSelf = 'center';
+                item.style.background = 'rgba(69, 71, 90, 0.5)';
+                item.style.color = '#a6adc8';
+                item.style.fontSize = '12px';
+                item.style.padding = '4px 15px';
+                item.style.borderRadius = '20px';
+                item.style.margin = '10px 0';
+                item.innerHTML = `<em>${data.text} <small style="margin-left:8px; opacity:0.6">${displayTime}</small></em>`;
+            } else {
+                var userColor = getUserColor(data.user);
+                const isMe = data.user === username;
+                item.style.alignSelf = isMe ? 'flex-end' : 'flex-start';
+                item.style.background = isMe ? '#89b4fa' : '#313244';
+                item.style.color = isMe ? '#11111b' : '#cdd6f4';
+                
+                item.innerHTML = `
+                    <small style="display:block; font-weight:bold; font-size:10px; margin-bottom:4px; color:${isMe ? '#181825' : userColor}">
+                        ${isMe ? 'Me' : data.user}
+                    </small>
+                    ${data.text}
+                    <small style="display:block; font-size:9px; text-align:right; margin-top:4px; opacity:0.7;">
+                        ${displayTime}
+                    </small>`;
+            }
+            msgList.appendChild(item);
+            msgList.scrollTo({ top: msgList.scrollHeight, behavior: 'smooth' });
+        }
+
+        // --- TYPING EVENT LISTENERS ---
+        const inputField = document.getElementById('user-input');
+        inputField.addEventListener('input', () => {
+            socket.emit('typing', { user: username, room: currentRoom });
+            clearTimeout(typingTimer);
+            typingTimer = setTimeout(() => {
+                socket.emit('stop typing', { user: username, room: currentRoom });
+            }, 1000);
+        });
+
+        socket.on('typing', (data) => {
+            document.getElementById('typing-indicator').innerText = `${data.user} is typing...`;
+        });
+
+        socket.on('stop typing', () => {
+            document.getElementById('typing-indicator').innerText = '';
+        });
+
+        var form = document.getElementById('chat-form');
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+            if (inputField.value) {
+                socket.emit('chat message', { user: username, text: inputField.value });
+                inputField.value = '';
+                socket.emit('stop typing', { user: username, room: currentRoom });
+            }
+        });
+
+        function deleteAccount() { if(confirm("Delete account?")) socket.emit('delete account', username); }
+        function deleteRoom() { if(confirm("Delete room?")) socket.emit('delete room', currentRoom); }
+        socket.on('account deleted', () => location.reload());
+        socket.on('room kicked', () => location.reload());
+        // --- 3. Update the existing chat message listener ---
+     socket.on('chat message', (data) => {addMessageToUI(data); 
+        notifyUser(data); // <--- Add this line here
+        });
+        //socket.on('chat message', (data) => { addMessageToUI(data); });
+        socket.on('load history', (history) => {
+            document.getElementById('messages').innerHTML = ""; 
+            if (history) history.forEach(addMessageToUI);
+        });
+
+        function getUserColor(u) {
+            let hash = 0;
+            for (let i = 0; i < u.length; i++) hash = u.charCodeAt(i) + ((hash << 5) - hash);
+            return `hsl(${Math.abs(hash) % 360}, 70%, 70%)`;
+        }
+
+        function leaveChat() {
+            if (confirm("Download chat log?")) downloadChat();
+            location.reload(); 
+        }
+
+        function downloadChat() {
+            const messageElements = document.querySelectorAll('#messages li');
+            let chatContent = `--- Chat Log: ${currentRoom} ---\n\n`;
+            messageElements.forEach((el) => { chatContent += el.innerText + "\n"; });
+            const blob = new Blob([chatContent], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${currentRoom}_log.txt`;
+            a.click();
+        }
+    </script>
+</body>
+</html>
